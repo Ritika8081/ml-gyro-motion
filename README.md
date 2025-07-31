@@ -38,7 +38,7 @@ This project is a **real-time motion classification system** that uses **gyrosco
 
 ## Acknowledgments
 
-Special thanks to **[Krishnanshu Mittal](https://github.com/CIumsy)** for his invaluable guidance and support throughout this project — from building the ML pipeline to handling real-time gyroscope data.  
+Special thanks to **[Deepak Khatri](https://github.com/lorforlinux)** and **[Krishnanshu Mittal](https://github.com/CIumsy)** for his invaluable guidance and support throughout this project — from building the ML pipeline to handling real-time gyroscope data.  
 His support helped shape the AI and hardware integration aspects of this work.
 
 
