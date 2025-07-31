@@ -1,7 +1,8 @@
 'use client'
-import { useEffect, useState } from 'react';
-import { createAndTrainModel } from '../lib/trainModel';
+import { useEffect, useState, useRef } from 'react';
+import {  createAndTrainModelFromCSV } from '../lib/trainModel';
 import * as tf from '@tensorflow/tfjs';
+import { Activity, Zap, Target, TrendingUp, Wifi, WifiOff } from 'lucide-react';
 
 type SerialPort = any; // Add this line to declare SerialPort type
 
@@ -14,27 +15,33 @@ const [reader, setReader] = useState<ReadableStreamDefaultReader | null>(null);
   const [c, setC] = useState(0); // az
   const [motion, setMotion] = useState<string | null>(null);
   const [history, setHistory] = useState<{ a: number, b: number, c: number }[]>([]);
+  const [recording, setRecording] = useState(false);
+  const [selectedClass, setSelectedClass] = useState<number | null>(null);
+  const [recordedData, setRecordedData] = useState<{ classLabel: number, ax: number, ay: number, az: number }[]>([]);
+  const [dummy, setDummy] = useState(0); // for re-render
+  const recordingRef = useRef(false);
+  const selectedClassRef = useRef<number | null>(null);
   const labels = ['horizontal', 'vertical', 'still'];
 
-  useEffect(() => {
-    const loadOrTrainModel = async () => {
-      try {
-        const loadedModel = await tf.loadLayersModel('indexeddb://motion-model');
-        loadedModel.compile({
-          optimizer: tf.train.adam(0.01),
-          loss: 'categoricalCrossentropy',
-        });
-        setModel(loadedModel);
-        console.log('✅ Motion model loaded and compiled');
-      } catch (error) {
-        console.log('⚠️ No motion model found. Training a new one...');
-        const trainedModel = await createAndTrainModel();
-        setModel(trainedModel);
-      }
-    };
+  
 
-    loadOrTrainModel();
+  useEffect(() => {
+    setModel(null); // No model loaded by default, must upload CSV
   }, []);
+
+  useEffect(() => {
+  const loadModel = async () => {
+    try {
+      const loadedModel = await tf.loadLayersModel('indexeddb://motion-model');
+      setModel(loadedModel);
+      console.log('✅ Model loaded from local storage');
+    } catch (err) {
+      setModel(null);
+      console.log('ℹ️ No saved model found. Please upload a CSV to train.');
+    }
+  };
+  loadModel();
+}, []);
 
   useEffect(() => {
   if (!reader || !model) return;
@@ -47,11 +54,9 @@ const [reader, setReader] = useState<ReadableStreamDefaultReader | null>(null);
         const { value, done } = await reader.read();
         if (done || !value) break;
 
-        console.log('Serial value:', value); // <-- Add this line
-
         const [ax, ay, az] = value.trim().split(',').map(Number);
         if ([ax, ay, az].some(v => isNaN(v))) {
-          console.warn('Invalid serial input:', value);
+        
           continue; // Skip this reading, but keep reading
         }
 
@@ -71,6 +76,18 @@ const [reader, setReader] = useState<ReadableStreamDefaultReader | null>(null);
           const predictedIndex = result.indexOf(Math.max(...result));
           setMotion(labels[predictedIndex]);
         }
+
+        if (recordingRef.current && selectedClassRef.current) {
+          setRecordedData(prev => [
+            ...prev,
+            {
+              classLabel: selectedClassRef.current!,
+              ax,
+              ay,
+              az
+            }
+          ]);
+        }
       } catch (err) {
         console.warn('Read loop error:', err);
       }
@@ -82,6 +99,23 @@ const [reader, setReader] = useState<ReadableStreamDefaultReader | null>(null);
   return () => { cancelled = true; };
 }, [reader, model]);
 
+ const getMotionIcon = (motion: string) => {
+    switch (motion) {
+      case 'horizontal': return <TrendingUp className="w-6 h-6" />;
+      case 'vertical': return <Activity className="w-6 h-6" />;
+      case 'still': return <Target className="w-6 h-6" />;
+      default: return <Zap className="w-6 h-6" />;
+    }
+  };
+
+  const getMotionColor = (motion: string) => {
+    switch (motion) {
+      case 'horizontal': return 'text-blue-600 bg-blue-50';
+      case 'vertical': return 'text-blue-700 bg-blue-100';
+      case 'still': return 'text-blue-800 bg-blue-200';
+      default: return 'text-blue-600 bg-blue-50';
+    }
+  };
 
   const handlePredict = async () => {
     if (!model) return;
@@ -92,6 +126,10 @@ const [reader, setReader] = useState<ReadableStreamDefaultReader | null>(null);
     setMotion(labels[predictedIndex]);
   };
   
+  useEffect(() => {
+  selectedClassRef.current = selectedClass;
+}, [selectedClass]);
+
   useEffect(() => {
   return () => {
     reader?.cancel();
@@ -104,7 +142,7 @@ const [reader, setReader] = useState<ReadableStreamDefaultReader | null>(null);
     <main className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-2 sm:p-4">
       <div className="w-full max-w-xl">
         <h1 className="text-2xl sm:text-3xl font-bold mb-4 text-center">
-          Motion Classifier using TensorFlow.js 🧠
+          Motion Classifier using TensorFlow.js 
         </h1>
         <button
           onClick={async () => {
@@ -122,23 +160,8 @@ const [reader, setReader] = useState<ReadableStreamDefaultReader | null>(null);
           Connect to Accelerometer
         </button>
 
-        {/* Live Accelerometer Data */}
-        <div className="mb-4 p-4 bg-white rounded shadow flex flex-col sm:flex-row justify-between items-center gap-2">
-          <div className="text-base sm:text-lg">
-            <span className="font-semibold">X axis (ax): </span>
-            <span className="font-mono">{a}</span>
-          </div>
-          <div className="text-base sm:text-lg">
-            <span className="font-semibold">Y axis (ay): </span>
-            <span className="font-mono">{b}</span>
-          </div>
-          <div className="text-base sm:text-lg">
-            <span className="font-semibold">Z axis (az): </span>
-            <span className="font-mono">{c}</span>
-          </div>
-        </div>
 
-        {/* Manual Input & Predict */}
+        {/* Manual Input & Predict
         <div className="flex flex-col sm:flex-row gap-2 mb-4">
           <input
             type="number"
@@ -161,33 +184,111 @@ const [reader, setReader] = useState<ReadableStreamDefaultReader | null>(null);
             value={c}
             onChange={(e) => setC(parseFloat(e.target.value))}
           />
-          <button
-            className="bg-blue-600 text-white px-4 py-2 rounded flex-1 sm:flex-none"
-            onClick={handlePredict}
-          >
-            Predict Motion
-          </button>
-        </div>
+          
+        </div> */}
 
-        {/* Prediction Result */}
-        {motion && (
-          <p className="text-lg sm:text-xl font-medium text-center mb-4">
-            Predicted Motion: <span className="font-bold">{motion}</span>
-          </p>
-        )}
+         {motion ? (
+              <div className={`rounded-xl p-6 mb-6 ${getMotionColor(motion)}`}>
+                <div className="flex items-center gap-4">
+                  {getMotionIcon(motion)}
+                  <div>
+                    <div className="text-sm font-medium opacity-80">Detected Motion</div>
+                    <div className="text-2xl font-bold capitalize">{motion}</div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-gray-50 rounded-xl p-6 mb-6 text-center">
+                <Target className="w-12 h-12 text-gray-400 mx-auto mb-2" />
+                <div className="text-gray-500">No prediction yet</div>
+              </div>
+            )}
+            <div className="flex flex-col sm:flex-row gap-2 mb-4">
+  <button
+    className={`flex-1 px-3 py-2 rounded ${selectedClassRef.current === 0 ? 'bg-blue-600 text-white' : 'bg-white border'}`}
+    onClick={() => { selectedClassRef.current = 0; setDummy(d => d + 1); }}
+  >
+    Horizontal
+  </button>
+  <button
+    className={`flex-1 px-3 py-2 rounded ${selectedClassRef.current === 1 ? 'bg-green-600 text-white' : 'bg-white border'}`}
+    onClick={() => { selectedClassRef.current = 1; setDummy(d => d + 1); }}
+  >
+    Vertical
+  </button>
+  <button
+    className={`flex-1 px-3 py-2 rounded ${selectedClassRef.current === 2 ? 'bg-yellow-600 text-white' : 'bg-white border'}`}
+    onClick={() => { selectedClassRef.current = 2; setDummy(d => d + 1); }}
+  >
+    Still
+  </button>
+</div>
+<div className="flex gap-2 mb-4">
+  <button
+    className={`px-4 py-2 rounded ${recording ? 'bg-red-600 text-white' : 'bg-gray-200'}`}
+    onClick={() => { setRecording(true); recordingRef.current = true; }}
+    disabled={recording || selectedClassRef.current === null}
+  >
+    Start Recording
+  </button>
+  <button
+    className="px-4 py-2 rounded bg-gray-200"
+    onClick={() => { setRecording(false); recordingRef.current = false; }}
+    disabled={!recording}
+  >
+    Stop Recording
+  </button>
+  <button
+    className="px-4 py-2 rounded bg-blue-500 text-white"
+    onClick={() => {
+      if (recordedData.length === 0) return;
+      const csvRows = [
+        'class,x,y,z',
+        ...recordedData.map(d => `${d.classLabel},${d.ax},${d.ay},${d.az}`)
+      ];
+      const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'motion-data.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    }}
+    disabled={recordedData.length === 0}
+  >
+    Download CSV
+  </button>
+  <button
+    className="px-4 py-2 rounded bg-red-500 text-white"
+    onClick={async () => {
+      try {
+        await tf.io.removeModel('indexeddb://motion-model');
+        setModel(null);
+        console.log('🗑️ Model removed from local storage.');
+      } catch (err) {
+        console.log('No model found in local storage to remove.');
+      }
+    }}
+  >
+    Reset Model
+  </button>
+</div>
+<input
+  type="file"
+  accept=".csv"
+  className="mb-4"
+  onChange={async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-        {/* Recent Data Stream */}
-        <div className="my-4 p-4 bg-white rounded shadow text-sm max-h-64 overflow-y-auto w-full">
-          <div className="font-bold mb-2 text-center">Recent Data Stream:</div>
-          {history.length === 0 && <div className="text-gray-400 text-center">No data yet.</div>}
-          {history.map((item, idx) => (
-            <div key={idx} className="flex justify-between gap-2 border-b last:border-b-0 py-1">
-              <span>X: <span className="font-mono">{item.a}</span></span>
-              <span>Y: <span className="font-mono">{item.b}</span></span>
-              <span>Z: <span className="font-mono">{item.c}</span></span>
-            </div>
-          ))}
-        </div>
+    const text = await file.text();
+    const trainedModel = await createAndTrainModelFromCSV(text);
+    await trainedModel.save('indexeddb://motion-model'); // Save to local storage
+    setModel(trainedModel);
+    console.log("✅ Model trained from CSV and saved to local storage.");
+  }}
+/>
+      
       </div>
     </main>
   );
