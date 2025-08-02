@@ -2,13 +2,36 @@
 import { useEffect, useState, useRef } from 'react';
 import { createAndTrainModelFromCSV } from '../lib/trainModel';
 import * as tf from '@tensorflow/tfjs';
-import { Activity, Zap, Target, TrendingUp, Wifi, WifiOff } from 'lucide-react';
+import { Activity, Zap, Target, TrendingUp, Bluetooth, BluetoothOff, RotateCw } from 'lucide-react';
 
-type SerialPort = any; // Add this line to declare SerialPort type
+// Add global type declarations for Web Bluetooth API
+declare global {
+  interface BluetoothRemoteGATTCharacteristic extends EventTarget {
+    value?: DataView;
+    startNotifications(): Promise<BluetoothRemoteGATTCharacteristic>;
+    addEventListener(type: string, listener: (event: Event) => void): void;
+  }
+  interface BluetoothDevice extends EventTarget {
+    gatt?: BluetoothRemoteGATTServer;
+    name?: string;
+    addEventListener(type: string, listener: (event: Event) => void): void;
+  }
+  interface BluetoothRemoteGATTServer {
+    connected: boolean;
+    connect(): Promise<BluetoothRemoteGATTServer>;
+    disconnect(): void;
+    getPrimaryService(service: string): Promise<BluetoothRemoteGATTService>;
+  }
+  interface BluetoothRemoteGATTService {
+    getCharacteristic(characteristic: string): Promise<BluetoothRemoteGATTCharacteristic>;
+  }
+}
 
 export default function Home() {
-  const [reader, setReader] = useState<ReadableStreamDefaultReader | null>(null);
-  const [port, setPort] = useState<SerialPort | null>(null);
+  // @ts-ignore: BluetoothDevice is available in browsers with Web Bluetooth API
+  const [device, setDevice] = useState<BluetoothDevice | null>(null);
+  // @ts-ignore: BluetoothRemoteGATTCharacteristic is available in browsers with Web Bluetooth API
+  const [characteristic, setCharacteristic] = useState<BluetoothRemoteGATTCharacteristic | null>(null);
   const [model, setModel] = useState<tf.LayersModel | null>(null);
   const [a, setA] = useState(0); // ax
   const [b, setB] = useState(0); // ay
@@ -21,7 +44,11 @@ export default function Home() {
   const [dummy, setDummy] = useState(0); // for re-render
   const recordingRef = useRef(false);
   const selectedClassRef = useRef<number | null>(null);
-  const labels = ['Class 0', 'Class 1', 'Class 2'];
+  const labels = ['Class 0', 'Class 1', 'Class 2', 'Class 3'];
+
+  // BLE Configuration
+  const SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+  const CHARACTERISTIC_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
 
   useEffect(() => {
     setModel(null); // No model loaded by default, must upload CSV
@@ -41,68 +68,101 @@ export default function Home() {
     loadModel();
   }, []);
 
-  useEffect(() => {
-    if (!reader || !model) return;
+  // Handle BLE data reception
+  const handleBLEData = (event: Event) => {
+    const target = event.target as BluetoothRemoteGATTCharacteristic;
+    const value = new TextDecoder().decode(target.value);
 
-    let cancelled = false;
-
-    const readLoop = async () => {
-      while (!cancelled) {
-        try {
-          const { value, done } = await reader.read();
-          if (done || !value) break;
-
-          const [ax, ay, az] = value.trim().split(',').map(Number);
-          if ([ax, ay, az].some(v => isNaN(v))) {
-
-            continue; // Skip this reading, but keep reading
-          }
-
-          setA(ax);
-          setB(ay);
-          setC(az);
-
-          setHistory(prev => [
-            { a: ax, b: ay, c: az },
-            ...prev.slice(0, 19)
-          ]);
-
-          if (model) {
-            const input = tf.tensor2d([[ax, ay, az]]);
-            const output = model.predict(input) as tf.Tensor;
-            const result = await output.data();
-            const predictedIndex = result.indexOf(Math.max(...result));
-            setMotion(labels[predictedIndex]);
-          }
-
-          if (recordingRef.current && selectedClassRef.current !== null) {
-            setRecordedData(prev => [
-              ...prev,
-              {
-                classLabel: selectedClassRef.current!,
-                ax,
-                ay,
-                az
-              }
-            ]);
-          }
-
-        } catch (err) {
-          console.warn('Read loop error:', err);
-        }
+    try {
+      const [ax, ay, az] = value.trim().split(',').map(Number);
+      if ([ax, ay, az].some(v => isNaN(v))) {
+        return; // Skip invalid readings
       }
-    };
 
-    readLoop();
+      setA(ax);
+      setB(ay);
+      setC(az);
 
-    return () => { cancelled = true; };
-  }, [reader, model]);
+      setHistory(prev => [
+        { a: ax, b: ay, c: az },
+        ...prev.slice(0, 19)
+      ]);
+
+      if (model) {
+        const input = tf.tensor2d([[ax, ay, az]]);
+        const output = model.predict(input) as tf.Tensor;
+        const result = output.dataSync();
+        const predictedIndex = result.indexOf(Math.max(...result));
+        setMotion(labels[predictedIndex]);
+        input.dispose();
+        output.dispose();
+      }
+
+      if (recordingRef.current && selectedClassRef.current !== null) {
+        setRecordedData(prev => [
+          ...prev,
+          {
+            classLabel: selectedClassRef.current!,
+            ax,
+            ay,
+            az
+          }
+        ]);
+      }
+    } catch (err) {
+      console.warn('BLE data parsing error:', err);
+    }
+  };
+
+  // Connect to BLE device
+  const connectBLE = async () => {
+    try {
+      const bleDevice = await (navigator as Navigator & { bluetooth: any }).bluetooth.requestDevice({
+        filters: [{ name: 'ESP32C6_Accel' }],
+        optionalServices: [SERVICE_UUID]
+      });
+
+      const server = await bleDevice.gatt?.connect();
+      if (!server) throw new Error('Failed to connect to GATT server');
+
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      const char = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+      await char.startNotifications();
+      char.addEventListener('characteristicvaluechanged', handleBLEData);
+
+      setDevice(bleDevice);
+      setCharacteristic(char);
+      console.log('✅ BLE connected to ESP32');
+
+      // Handle disconnection
+      bleDevice.addEventListener('gattserverdisconnected', () => {
+        setDevice(null);
+        setCharacteristic(null);
+        console.log('🔌 BLE disconnected');
+      });
+
+    } catch (error) {
+      console.error('BLE connection failed:', error);
+      alert('Failed to connect to BLE device. Make sure your ESP32 is powered on and nearby.');
+    }
+  };
+
+  // Disconnect BLE
+  const disconnectBLE = () => {
+    if (device?.gatt?.connected) {
+      device.gatt.disconnect();
+    }
+    setDevice(null);
+    setCharacteristic(null);
+  };
 
   const getMotionIcon = (motion: string) => {
     switch (motion) {
       case 'Class 0': return <TrendingUp className="w-6 h-6" />;
       case 'Class 1': return <Activity className="w-6 h-6" />;
       case 'Class 2': return <Target className="w-6 h-6" />;
+      case 'Class 3': return <RotateCw className="w-6 h-6" />;
       default: return <Zap className="w-6 h-6" />;
     }
   };
@@ -112,17 +172,9 @@ export default function Home() {
       case 'Class 0': return 'text-blue-600 bg-blue-50';
       case 'Class 1': return 'text-blue-700 bg-blue-100';
       case 'Class 2': return 'text-blue-800 bg-blue-200';
+      case 'Class 3': return 'text-purple-600 bg-purple-50';
       default: return 'text-blue-600 bg-blue-50';
     }
-  };
-
-  const handlePredict = async () => {
-    if (!model) return;
-    const input = tf.tensor2d([[a, b, c]]);
-    const prediction = model.predict(input) as tf.Tensor;
-    const result = await prediction.data();
-    const predictedIndex = result.indexOf(Math.max(...result));
-    setMotion(labels[predictedIndex]);
   };
 
   useEffect(() => {
@@ -131,13 +183,11 @@ export default function Home() {
 
   useEffect(() => {
     return () => {
-      reader?.cancel();
-      port?.close();
+      disconnectBLE();
     };
-  }, [reader, port]);
+  }, []);
 
-
-  const isConnected = !!reader && !!port;
+  const isConnected = !!device && !!characteristic && device.gatt?.connected;
   const hasRecordedData = recordedData.length > 0;
 
   return (
@@ -147,62 +197,62 @@ export default function Home() {
           Motion Classifier using TensorFlow.js
         </h1>
 
-        {/* Step 1: Connect & Show Data */}
-        <div className="mb-2">
+        {/* Step 1: Connect BLE Device */}
+        <div className="mb-1">
           <h2 className="text-lg font-bold mb-2 text-center">Step 1: Connect Device & View Data</h2>
           <div className="flex justify-center">
             <button
-              onClick={async () => {
-                const newPort = await (navigator as any).serial.requestPort();
-                await newPort.open({ baudRate: 230400 });
-                const textDecoder = new TextDecoderStream();
-                newPort.readable.pipeTo(textDecoder.writable);
-                const newReader = textDecoder.readable.getReader();
-                setPort(newPort);
-                setReader(newReader);
-                console.log('✅ Serial connected');
-              }}
-              className={`w-full sm:w-auto px-4 py-2 rounded mb-4 shadow transition ${
-                isConnected
-                  ? 'bg-green-600 text-white'
-                  : 'bg-purple-600 text-white hover:bg-purple-700'
-              }`}
-              disabled={isConnected}
+              onClick={isConnected ? disconnectBLE : connectBLE}
+              className={`w-full sm:w-auto px-4 py-2 rounded mb-4 shadow transition flex items-center justify-center gap-2 ${isConnected
+                  ? 'bg-green-600 text-white hover:bg-green-700'
+                  : 'bg-blue-600 text-white hover:bg-blue-700'
+                }`}
             >
-              {isConnected ? 'Device Connected' : 'Connect to Accelerometer'}
+              {isConnected ? (
+                <>
+                  <Bluetooth className="w-5 h-5" />
+                  Device Connected (Click to Disconnect)
+                </>
+              ) : (
+                <>
+                  <BluetoothOff className="w-5 h-5" />
+                  Connect to ESP32 BLE
+                </>
+              )}
             </button>
           </div>
-          {/* <div className="bg-gray-50 rounded-xl p-4 mb-4 w-full">
-            <h3 className="font-semibold mb-2">Live Raw Data (last 10 rows)</h3>
-            <table className="w-full text-sm ">
-              <thead>
-                <tr>
-                  <th className="text-left">X (ax)</th>
-                  <th className="text-left">Y (ay)</th>
-                  <th className="text-left">Z (az)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.slice(0, 10).map((row, idx) => (
-                  <tr key={idx}>
-                    <td>{row.a}</td>
-                    <td>{row.b}</td>
-                    <td>{row.c}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div> */}
+
+          {isConnected && (
+            <div className="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">
+              <div className="flex items-center gap-2 text-green-700 mb-2">
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                <span className="font-medium">Live BLE Data Stream</span>
+              </div>
+              <div className="grid grid-cols-3 gap-4 text-center">
+                <div className="bg-white rounded-lg p-3">
+                  <div className="text-xs text-gray-500 mb-1">X-Axis</div>
+                  <div className="font-mono text-lg font-bold">{a.toFixed(2)}</div>
+                </div>
+                <div className="bg-white rounded-lg p-3">
+                  <div className="text-xs text-gray-500 mb-1">Y-Axis</div>
+                  <div className="font-mono text-lg font-bold">{b.toFixed(2)}</div>
+                </div>
+                <div className="bg-white rounded-lg p-3">
+                  <div className="text-xs text-gray-500 mb-1">Z-Axis</div>
+                  <div className="font-mono text-lg font-bold">{c.toFixed(2)}</div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Step 2: Record Data */}
         <div className="mb-8">
           <h2 className="text-lg font-bold mb-2 text-center">Step 2: Record Motion Data</h2>
-          
+
           {/* Class Descriptions - UI only */}
           <div className="bg-blue-50 rounded-lg p-4 mb-4 border border-blue-200">
-           
-            <div className="grid grid-cols-3 gap-2 text-sm">
+            <div className="grid grid-cols-2 gap-2 text-sm">
               <div className="flex flex-row items-center gap-3">
                 <div className="w-6 h-6 bg-blue-600 text-white rounded flex items-center justify-center text-xs font-bold">0</div>
                 <span><strong>Class 0:</strong> Horizontal movement</span>
@@ -215,33 +265,44 @@ export default function Home() {
                 <div className="w-6 h-6 bg-yellow-600 text-white rounded flex items-center justify-center text-xs font-bold">2</div>
                 <span><strong>Class 2:</strong> Still/Stationary</span>
               </div>
+              <div className="flex items-center gap-3">
+                <div className="w-6 h-6 bg-purple-600 text-white rounded flex items-center justify-center text-xs font-bold">3</div>
+                <span><strong>Class 3:</strong> Circular motion</span>
+              </div>
             </div>
           </div>
 
-          <div className="flex flex-col sm:flex-row gap-2 mb-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
             <button
-              className={`flex-1 px-3 py-2 rounded ${selectedClass === 0 ? 'bg-blue-600 text-white' : 'bg-white border'}`}
+              className={`px-3 py-2 rounded ${selectedClass === 0 ? 'bg-blue-600 text-white' : 'bg-white border'}`}
               onClick={() => { setSelectedClass(0); selectedClassRef.current = 0; }}
               disabled={!isConnected || recording}
             >
               Class 0
             </button>
             <button
-              className={`flex-1 px-3 py-2 rounded ${selectedClass === 1 ? 'bg-green-600 text-white' : 'bg-white border'}`}
+              className={`px-3 py-2 rounded ${selectedClass === 1 ? 'bg-green-600 text-white' : 'bg-white border'}`}
               onClick={() => { setSelectedClass(1); selectedClassRef.current = 1; }}
               disabled={!isConnected || recording}
             >
               Class 1
             </button>
             <button
-              className={`flex-1 px-3 py-2 rounded ${selectedClass === 2 ? 'bg-yellow-600 text-white' : 'bg-white border'}`}
+              className={`px-3 py-2 rounded ${selectedClass === 2 ? 'bg-yellow-600 text-white' : 'bg-white border'}`}
               onClick={() => { setSelectedClass(2); selectedClassRef.current = 2; }}
               disabled={!isConnected || recording}
             >
               Class 2
             </button>
+            <button
+              className={`px-3 py-2 rounded ${selectedClass === 3 ? 'bg-purple-600 text-white' : 'bg-white border'}`}
+              onClick={() => { setSelectedClass(3); selectedClassRef.current = 3; }}
+              disabled={!isConnected || recording}
+            >
+              Class 3
+            </button>
           </div>
-          <div className="flex gap-2 mb-4">
+          <div className="flex gap-2 mb-4 justify-center">
             <button
               className={`px-4 py-2 rounded ${recording ? 'bg-red-600 text-white' : 'bg-gray-200'}`}
               onClick={() => { setRecording(true); recordingRef.current = true; }}
@@ -277,13 +338,26 @@ export default function Home() {
               Download CSV
             </button>
           </div>
-          
+
+          {hasRecordedData && (
+            <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+              <div className="text-gray-700 font-medium">
+                📊 Total samples: {recordedData.length}
+              </div>
+              <div className="text-sm text-gray-600 mt-1">
+                Class 0: {recordedData.filter(d => d.classLabel === 0).length} •
+                Class 1: {recordedData.filter(d => d.classLabel === 1).length} •
+                Class 2: {recordedData.filter(d => d.classLabel === 2).length} •
+                Class 3: {recordedData.filter(d => d.classLabel === 3).length}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Step 3: Train Model */}
         <div className="mb-8">
           <h2 className="text-lg font-bold mb-2 text-center">Step 3: Train Model</h2>
-         
+
           <a
             href="/train"
             className="block w-full text-center bg-green-500 text-white px-4 py-2 rounded mb-4 shadow hover:bg-green-600 transition"
@@ -293,12 +367,11 @@ export default function Home() {
         </div>
 
         {/* Step 4: Motion Detection */}
-        <div className="mb-8">
+        <div className="mb-2">
           <h2 className="text-lg font-bold mb-2 text-center">Step 4: Motion Detection</h2>
           {model ? (
             <div className="bg-white rounded-xl p-6 shadow-lg">
               <div className="text-center">
-               
                 <div className={`inline-flex items-center gap-3 px-6 py-4 rounded-xl ${getMotionColor(motion || '')}`}>
                   {getMotionIcon(motion || '')}
                   <span className="text-xl font-bold">
@@ -306,22 +379,6 @@ export default function Home() {
                   </span>
                 </div>
               </div>
-              {/* <div className="mt-6 pt-4 border-t">
-                <div className="grid grid-cols-3 gap-4 text-center">
-                  <div>
-                    <div className="text-xs text-gray-500">X-Axis</div>
-                    <div className="font-mono text-lg">{a.toFixed(2)}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-500">Y-Axis</div>
-                    <div className="font-mono text-lg">{b.toFixed(2)}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-500">Z-Axis</div>
-                    <div className="font-mono text-lg">{c.toFixed(2)}</div>
-                  </div>
-                </div>
-              </div> */}
             </div>
           ) : (
             <div className="bg-gray-100 rounded-xl p-6 text-center">
