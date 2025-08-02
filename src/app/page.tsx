@@ -148,28 +148,30 @@ export default function Home() {
         </h1>
 
         {/* Step 1: Connect & Show Data */}
-        <div className="mb-8">
-          <h2 className="text-lg font-bold mb-2">Step 1: Connect Device & View Data</h2>
-          <button
-            onClick={async () => {
-              const newPort = await (navigator as any).serial.requestPort();
-              await newPort.open({ baudRate: 230400 });
-              const textDecoder = new TextDecoderStream();
-              newPort.readable.pipeTo(textDecoder.writable);
-              const newReader = textDecoder.readable.getReader();
-              setPort(newPort);
-              setReader(newReader);
-              console.log('✅ Serial connected');
-            }}
-            className={`w-full sm:w-auto px-4 py-2 rounded mb-4 shadow transition ${
-              isConnected
-                ? 'bg-green-600 text-white'
-                : 'bg-purple-600 text-white hover:bg-purple-700'
-            }`}
-            disabled={isConnected}
-          >
-            {isConnected ? 'Device Connected' : 'Connect to Accelerometer'}
-          </button>
+        <div className="mb-2">
+          <h2 className="text-lg font-bold mb-2 text-center">Step 1: Connect Device & View Data</h2>
+          <div className="flex justify-center">
+            <button
+              onClick={async () => {
+                const newPort = await (navigator as any).serial.requestPort();
+                await newPort.open({ baudRate: 230400 });
+                const textDecoder = new TextDecoderStream();
+                newPort.readable.pipeTo(textDecoder.writable);
+                const newReader = textDecoder.readable.getReader();
+                setPort(newPort);
+                setReader(newReader);
+                console.log('✅ Serial connected');
+              }}
+              className={`w-full sm:w-auto px-4 py-2 rounded mb-4 shadow transition ${
+                isConnected
+                  ? 'bg-green-600 text-white'
+                  : 'bg-purple-600 text-white hover:bg-purple-700'
+              }`}
+              disabled={isConnected}
+            >
+              {isConnected ? 'Device Connected' : 'Connect to Accelerometer'}
+            </button>
+          </div>
           {/* <div className="bg-gray-50 rounded-xl p-4 mb-4 w-full">
             <h3 className="font-semibold mb-2">Live Raw Data (last 10 rows)</h3>
             <table className="w-full text-sm ">
@@ -195,23 +197,23 @@ export default function Home() {
 
         {/* Step 2: Record Data */}
         <div className="mb-8">
-          <h2 className="text-lg font-bold mb-2">Step 2: Record Motion Data</h2>
+          <h2 className="text-lg font-bold mb-2 text-center">Step 2: Record Motion Data</h2>
           
           {/* Class Descriptions - UI only */}
           <div className="bg-blue-50 rounded-lg p-4 mb-4 border border-blue-200">
-            <h3 className="font-semibold text-blue-900 mb-3">Motion Class Definitions:</h3>
-            <div className="grid grid-cols-1 gap-2 text-sm">
-              <div className="flex items-center gap-3">
+           
+            <div className="grid grid-cols-3 gap-2 text-sm">
+              <div className="flex flex-row items-center gap-3">
                 <div className="w-6 h-6 bg-blue-600 text-white rounded flex items-center justify-center text-xs font-bold">0</div>
-                <span><strong>Class 0:</strong> Horizontal movement (side-to-side motion)</span>
+                <span><strong>Class 0:</strong> Horizontal movement</span>
               </div>
               <div className="flex items-center gap-3">
                 <div className="w-6 h-6 bg-green-600 text-white rounded flex items-center justify-center text-xs font-bold">1</div>
-                <span><strong>Class 1:</strong> Vertical movement (up-and-down motion)</span>
+                <span><strong>Class 1:</strong> Vertical movement</span>
               </div>
               <div className="flex items-center gap-3">
                 <div className="w-6 h-6 bg-yellow-600 text-white rounded flex items-center justify-center text-xs font-bold">2</div>
-                <span><strong>Class 2:</strong> Still/Stationary (device at rest)</span>
+                <span><strong>Class 2:</strong> Still/Stationary</span>
               </div>
             </div>
           </div>
@@ -280,7 +282,7 @@ export default function Home() {
 
         {/* Step 3: Train Model */}
         <div className="mb-8">
-          <h2 className="text-lg font-bold mb-2">Step 3: Train Model</h2>
+          <h2 className="text-lg font-bold mb-2 text-center">Step 3: Train Model</h2>
          
           <a
             href="/train"
@@ -292,13 +294,11 @@ export default function Home() {
 
         {/* Step 4: Motion Detection */}
         <div className="mb-8">
-          <h2 className="text-lg font-bold mb-2">Step 4: Motion Detection</h2>
+          <h2 className="text-lg font-bold mb-2 text-center">Step 4: Motion Detection</h2>
           {model ? (
             <div className="bg-white rounded-xl p-6 shadow-lg">
               <div className="text-center">
-                <div className="mb-4">
-                  <span className="text-sm text-gray-600">Current Motion:</span>
-                </div>
+               
                 <div className={`inline-flex items-center gap-3 px-6 py-4 rounded-xl ${getMotionColor(motion || '')}`}>
                   {getMotionIcon(motion || '')}
                   <span className="text-xl font-bold">
