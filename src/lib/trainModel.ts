@@ -23,7 +23,7 @@ function processCSV(csvText: string): { xs: tf.Tensor2D; ys: tf.Tensor2D } {
   };
 }
 
-export async function createAndTrainModelFromCSV(csvText: string) {
+export async function createAndTrainModelFromCSV(csvText: string, onEpochEnd?: (epoch: number, logs: any) => void) {
   const { xs, ys } = processCSV(csvText);
 
   const model = tf.sequential();
@@ -38,13 +38,11 @@ export async function createAndTrainModelFromCSV(csvText: string) {
   });
 
   await model.fit(xs, ys, {
-    epochs: 100,
+    epochs: 30, // <-- set to 30 epochs
     shuffle: true,
     callbacks: {
       onEpochEnd: (epoch, logs) => {
-        if (logs) {
-          console.log(`Epoch ${epoch + 1}: loss=${logs.loss?.toFixed(4)}, accuracy=${(logs.acc ? (logs.acc * 100).toFixed(2) : 'N/A')}%`);
-        }
+        if (onEpochEnd) onEpochEnd(epoch, logs);
       }
     }
   });
