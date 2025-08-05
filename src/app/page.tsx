@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useRef } from 'react';
-import { createAndTrainModelFromCSV } from '../lib/trainModel';
+import { createAndTrainModelFromCSV, calculateMotionFeatures as extractFeatures } from '../lib/trainModel';
 import * as tf from '@tensorflow/tfjs';
 import { Activity, Zap, Target, TrendingUp, Bluetooth, BluetoothOff, RotateCw } from 'lucide-react';
 
@@ -50,6 +50,9 @@ export default function Home() {
   const SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
   const CHARACTERISTIC_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
 
+  // Replace the dataBuffer state with a ref
+  const dataBufferRef = useRef<number[][]>([]);
+
   useEffect(() => {
     setModel(null); // No model loaded by default, must upload CSV
   }, []);
@@ -57,12 +60,15 @@ export default function Home() {
   useEffect(() => {
     const loadModel = async () => {
       try {
+        console.log('🔄 Attempting to load model from IndexedDB...');
         const loadedModel = await tf.loadLayersModel('indexeddb://motion-model');
         setModel(loadedModel);
         console.log('✅ Model loaded from local storage');
+        console.log('Model summary:', loadedModel.summary());
       } catch (err) {
         setModel(null);
-        console.log('ℹ️ No saved model found. Please upload a CSV to train.');
+        console.log('❌ No saved model found. Please upload a CSV to train.');
+        console.error('Model loading error:', err);
       }
     };
     loadModel();
@@ -72,32 +78,67 @@ export default function Home() {
   const handleBLEData = (event: Event) => {
     const target = event.target as BluetoothRemoteGATTCharacteristic;
     const value = new TextDecoder().decode(target.value);
-
+    
     try {
       const [ax, ay, az] = value.trim().split(',').map(Number);
       if ([ax, ay, az].some(v => isNaN(v))) {
-        return; // Skip invalid readings
+        return;
       }
 
       setA(ax);
       setB(ay);
       setC(az);
 
+      // Update buffer using ref (persists across renders)
+      dataBufferRef.current = [...dataBufferRef.current, [ax, ay, az]].slice(-10);
+      const finalBuffer = dataBufferRef.current;
+      
+      // Log buffer status
+      console.log(`Buffer size: ${finalBuffer.length}/10 needed for prediction`);
+      console.log('Current buffer:', finalBuffer);
+
       setHistory(prev => [
         { a: ax, b: ay, c: az },
         ...prev.slice(0, 19)
       ]);
 
-      if (model) {
-        const input = tf.tensor2d([[ax, ay, az]]);
-        const output = model.predict(input) as tf.Tensor;
-        const result = output.dataSync();
-        const predictedIndex = result.indexOf(Math.max(...result));
-        setMotion(labels[predictedIndex]);
-        input.dispose();
-        output.dispose();
+      // Use the buffer length directly
+      if (model && finalBuffer.length >= 10) {
+        console.log('Attempting prediction with buffer:', finalBuffer);
+        
+        try {
+          // Extract features using the current buffer
+          const features = extractFeatures(finalBuffer);
+          console.log('Extracted features:', features);
+          console.log('Features length:', features.length);
+          
+          const input = tf.tensor2d([features]);
+          const output = model.predict(input) as tf.Tensor;
+          const result = output.dataSync();
+          const predictedIndex = result.indexOf(Math.max(...result));
+          const confidence = Math.max(...result);
+          
+          console.log('Prediction results:', result);
+          console.log('Predicted class:', predictedIndex, 'with confidence:', confidence);
+          
+          // Lower the confidence threshold for testing
+          if (confidence > 0.3) {
+            setMotion(labels[predictedIndex]);
+            console.log('Motion set to:', labels[predictedIndex]);
+          } else {
+            console.log('Confidence too low:', confidence);
+          }
+          
+          input.dispose();
+          output.dispose();
+        } catch (featureError) {
+          console.warn('Feature extraction error:', featureError);
+        }
+      } else {
+        console.log('Not enough data for prediction. Buffer length:', finalBuffer.length, 'Model loaded:', !!model);
       }
 
+      // Recording logic remains the same
       if (recordingRef.current && selectedClassRef.current !== null) {
         setRecordedData(prev => [
           ...prev,
@@ -109,6 +150,7 @@ export default function Home() {
           }
         ]);
       }
+
     } catch (err) {
       console.warn('BLE data parsing error:', err);
     }
@@ -222,7 +264,7 @@ export default function Home() {
             </button>
           </div>
 
-          {isConnected && (
+          {/* {isConnected && (
             <div className="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">
               <div className="flex items-center gap-2 text-green-700 mb-2">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
@@ -243,7 +285,7 @@ export default function Home() {
                 </div>
               </div>
             </div>
-          )}
+          )} */}
         </div>
 
         {/* Step 2: Record Data */}
@@ -390,3 +432,4 @@ export default function Home() {
     </main>
   );
 }
+
