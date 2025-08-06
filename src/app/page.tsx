@@ -40,7 +40,7 @@ export default function Home() {
   const [history, setHistory] = useState<{ a: number, b: number, c: number }[]>([]);
   const [recording, setRecording] = useState(false);
   const [selectedClass, setSelectedClass] = useState<number | null>(null);
-  const [recordedData, setRecordedData] = useState<{ classLabel: number, ax: number, ay: number, az: number }[]>([]);
+  const [recordedData, setRecordedData] = useState<{ classLabel: number, features?: number[], ax?: number, ay?: number, az?: number }[]>([]);
   const [dummy, setDummy] = useState(0); // for re-render
   const recordingRef = useRef(false);
   const selectedClassRef = useRef<number | null>(null);
@@ -138,17 +138,20 @@ export default function Home() {
         console.log('Not enough data for prediction. Buffer length:', finalBuffer.length, 'Model loaded:', !!model);
       }
 
-      // Recording logic remains the same
+      // Recording logic
       if (recordingRef.current && selectedClassRef.current !== null) {
-        setRecordedData(prev => [
-          ...prev,
-          {
-            classLabel: selectedClassRef.current!,
-            ax,
-            ay,
-            az
-          }
-        ]);
+        // Use a sliding window of the last 10 readings
+        const currentWindow = [...dataBufferRef.current, [ax, ay, az]].slice(-10);
+        if (currentWindow.length === 10) {
+          const features = extractFeatures(currentWindow);
+          setRecordedData(prev => [
+            ...prev,
+            {
+              classLabel: selectedClassRef.current!,
+              features // Store computed features
+            }
+          ]);
+        }
       }
 
     } catch (err) {
@@ -363,11 +366,13 @@ export default function Home() {
               className="px-4 py-2 rounded bg-blue-500 text-white"
               onClick={() => {
                 if (recordedData.length === 0) return;
-                const csvRows = [
-                  'class,x,y,z',
-                  ...recordedData.map(d => `${d.classLabel},${d.ax},${d.ay},${d.az}`)
-                ];
-                const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+                const featureCount = recordedData[0].features?.length || 0;
+                // Update your CSV download logic
+                const csvContent = [
+                  ['class', ...Array.from({length: featureCount}, (_, i) => `feature_${i}`)].join(','),
+                  ...recordedData.map(d => [d.classLabel, ...(d.features ?? [])].join(','))
+                ].join('\n');
+                const blob = new Blob([csvContent], { type: 'text/csv' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
@@ -431,5 +436,33 @@ export default function Home() {
       </div>
     </main>
   );
+}
+
+function processCSV(csvText: string): { xs: tf.Tensor2D; ys: tf.Tensor2D } {
+  const lines = csvText.trim().split('\n');
+  const headers = lines[0].split(',');
+  const dataLines = lines.slice(1);
+
+  const allFeatures: number[][] = [];
+  const allLabels: number[][] = [];
+
+  for (const line of dataLines) {
+    const values = line.split(',').map(Number);
+    const classStr = values[0];
+    const features = values.slice(1); // All columns except first are features
+    
+    allFeatures.push(features);
+    
+    // One-hot encoding for 4 classes
+    if (classStr === 0) allLabels.push([1, 0, 0, 0]);      // horizontal
+    else if (classStr === 1) allLabels.push([0, 1, 0, 0]); // vertical  
+    else if (classStr === 2) allLabels.push([0, 0, 1, 0]); // still
+    else allLabels.push([0, 0, 0, 1]);                     // circular
+  }
+
+  return {
+    xs: tf.tensor2d(allFeatures),
+    ys: tf.tensor2d(allLabels)
+  };
 }
 
